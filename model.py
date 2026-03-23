@@ -45,3 +45,7 @@ class DistributedTransformerTrainer:
     def cleanup(self):
         destroy_process_group()
 
+if __name__ == "__main__":
+    # This is a simplified example. In a real scenario, you'd launch this with torch.distributed.launch
+    # For demonstration, we'll just show the class definition.
+    print("Distributed Transformer Trainer class defined. Ready for multi-GPU training.")
