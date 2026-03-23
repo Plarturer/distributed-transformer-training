@@ -1,17 +1,47 @@
+
 import torch
 import torch.nn as nn
-from transformers import BertConfig, BertModel
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import os
 
-class ScalableTransformer(nn.Module):
-    def __init__(self, config_name='bert-base-uncased'):
-        super(ScalableTransformer, self).__init__()
-        self.config = BertConfig.from_pretrained(config_name)
-        self.transformer = BertModel(self.config)
-        self.classifier = nn.Linear(self.config.hidden_size, 2)
+class DistributedTransformerTrainer:
+    def __init__(self, rank, world_size, model_name="bert-base-uncased", num_labels=2):
+        self.rank = rank
+        self.world_size = world_size
+        self.model_name = model_name
+        self.num_labels = num_labels
+        self._setup_ddp()
+        self.model = self._load_model()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs[1]
-        return self.classifier(pooled_output)
+    def _setup_ddp(self):
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "12355"
+        init_process_group(backend="nccl", rank=self.rank, world_size=self.world_size)
+        torch.cuda.set_device(self.rank)
 
-print("Model architecture defined for distributed environments.")
+    def _load_model(self):
+        config = AutoConfig.from_pretrained(self.model_name, num_labels=self.num_labels)
+        model = AutoModelForSequenceClassification.from_pretrained(self.model_name, config=config).to(self.rank)
+        return DDP(model, device_ids=[self.rank])
+
+    def train(self, dataloader, optimizer, epochs):
+        self.model.train()
+        for epoch in range(epochs):
+            for batch in dataloader:
+                optimizer.zero_grad()
+                input_ids = batch["input_ids"].to(self.rank)
+                attention_mask = batch["attention_mask"].to(self.rank)
+                labels = batch["labels"].to(self.rank)
+                outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                loss.backward()
+                optimizer.step()
+                if self.rank == 0:
+                    print(f"Epoch {epoch}, Loss: {loss.item()}")
+
+    def cleanup(self):
+        destroy_process_group()
+
